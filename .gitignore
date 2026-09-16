@@ -1,0 +1,21 @@
+# Python environments and caches
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+patreon_mega_audit.egg-info/
+
+# Local reports and non-secret app settings
+outputs/
+patreon_updater_settings.json
+work/
+manual_mappings.json
+manual_mappings.tmp
+
+# Saved Patreon browser session; never publish this directory
+.playwright-patreon-profile/
+
+# PyInstaller output (publish ZIP releases separately, not in the repository)
+build/
+dist/
