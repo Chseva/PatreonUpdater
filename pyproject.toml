@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "patreon-mega-audit"
-version = "1.0"
+version = "1.0.1"
 description = "Audit MEGA folder links referenced by Patreon posts."
 requires-python = ">=3.10"
 dependencies = ["requests>=2.31"]

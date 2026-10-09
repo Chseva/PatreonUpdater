@@ -1,6 +1,6 @@
 # Patreon Updater
 
-Version: **v1.0**
+Version: **v1.0.1**
 
 Patreon Updater finds outdated MEGA folder links in published Patreon posts and, after review, replaces them with the current links from your local MEGA listing.
 
