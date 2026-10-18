@@ -17,7 +17,7 @@ from .credential_store import delete_token, load_token, save_token
 from .mega import read_listing
 from .mappings import load_mappings, save_mappings
 from .patreon import PatreonApiError, PatreonClient
-from .report import build_report, render_markdown
+from .report import build_report, indexed_mega_links, render_markdown
 from .update_posts import Replacement, load_replacements
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -116,7 +116,7 @@ class PatreonUpdaterApp(tk.Tk):
         actions = ttk.Frame(outer)
         actions.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(12, 10))
         ttk.Button(actions, text="Generate report", command=self.generate_report).pack(side="left")
-        ttk.Button(actions, text="Update selected post", command=self.update_selected).pack(side="left", padx=8)
+        ttk.Button(actions, text="Update selected link", command=self.update_selected).pack(side="left", padx=8)
         ttk.Button(actions, text="Update all posts", command=self.update_all).pack(side="left")
         ttk.Button(actions, text="Manage mappings", command=self.manage_mappings).pack(side="left", padx=8)
         ttk.Button(actions, text="Settings…", command=self.open_settings).pack(side="left", padx=8)
@@ -263,33 +263,89 @@ class PatreonUpdaterApp(tk.Tk):
             return
         dialog = tk.Toplevel(self)
         dialog.title("Manage mappings")
-        dialog.geometry("850x480")
+        dialog.geometry("900x520")
         dialog.transient(self)
         dialog.grab_set()
         frame = ttk.Frame(dialog, padding=14)
         frame.pack(fill="both", expand=True)
-        ttk.Label(frame, text="Select a post and its MEGA folder. Saved mappings override title matching.").pack(anchor="w")
-        tree = ttk.Treeview(frame, columns=("title", "folder", "status"), show="headings", selectmode="browse")
-        for column, label in (("title", "Patreon post"), ("folder", "Saved folder"), ("status", "Status")):
+        ttk.Label(frame, text="Select a post, then double-click its Link number to choose which MEGA link to map.").pack(anchor="w")
+        tree = ttk.Treeview(frame, columns=("title", "link", "folder", "status"), show="headings", selectmode="browse")
+        for column, label in (("title", "Patreon post"), ("link", "Link"), ("folder", "Saved folder"), ("status", "Status")):
             tree.heading(column, text=label)
+        tree.column("title", width=300)
+        tree.column("link", width=70, anchor="center", stretch=False)
+        tree.column("folder", width=190)
+        tree.column("status", width=280)
         tree.pack(fill="both", expand=True, pady=10)
         folder_names = sorted({folder.name for folder in self.audit_folders})
         picker = ttk.Combobox(frame, values=folder_names, state="readonly", width=65)
         picker.pack(fill="x", pady=5)
+
+        selected_link: dict[str, int] = {}
+
+        def link_number(post_id: str) -> int:
+            return selected_link.get(post_id, 1)
+
+        def chosen_folder(post_id: str, number: int) -> str:
+            value = mappings.get(post_id, {})
+            if isinstance(value, str):
+                post = next((post for post in self.audit_posts if post.id == post_id), None)
+                return value if number == 1 and post and len(indexed_mega_links(post.content)) == 1 else ""
+            return value.get(str(number), "")
 
         def refresh():
             selected = tree.selection()
             tree.delete(*tree.get_children())
             report = build_report(self.audit_posts, self.audit_folders, mappings)
             for post in report.posts_with_mega_links:
-                tree.insert("", "end", iid=post.post_id, values=(f"{post.title} ({post.post_id})", mappings.get(post.post_id, ""), post.update_status))
+                number = link_number(post.post_id)
+                link = next((item for item in post.links if item.link_number == number), None)
+                count = len(post.links)
+                tree.insert("", "end", iid=post.post_id, values=(
+                    f"{post.title} ({post.post_id})", f"{number} / {count} ▾" if count > 1 else "1",
+                    chosen_folder(post.post_id, number), link.status if link else post.update_status,
+                ))
             if selected and tree.exists(selected[0]):
                 tree.selection_set(selected[0])
 
         def choose(event=None):
             selected = tree.selection()
             if selected:
-                picker.set(mappings.get(selected[0], ""))
+                picker.set(chosen_folder(selected[0], link_number(selected[0])))
+
+        def edit_link_cell(event):
+            if tree.identify("region", event.x, event.y) != "cell" or tree.identify_column(event.x) != "#2":
+                return
+            post_id = tree.identify_row(event.y)
+            if not post_id:
+                return
+            report = build_report(self.audit_posts, self.audit_folders, mappings)
+            finding = next((item for item in report.posts_with_mega_links if item.post_id == post_id), None)
+            count = len(finding.links) if finding else 0
+            if count < 2:
+                return
+            bounds = tree.bbox(post_id, "link")
+            if not bounds:
+                return
+            x, y, width, height = bounds
+            selector = ttk.Combobox(tree, values=[str(n) for n in range(1, count + 1)], state="readonly", width=5)
+            selector.place(x=x, y=y, width=width, height=height)
+            selector.set(str(link_number(post_id)))
+
+            def finish(_event=None):
+                if selector.winfo_exists():
+                    try:
+                        selected_link[post_id] = int(selector.get())
+                    except ValueError:
+                        pass
+                    selector.destroy()
+                    refresh()
+                    tree.selection_set(post_id)
+                    choose()
+
+            selector.bind("<<ComboboxSelected>>", finish)
+            selector.bind("<FocusOut>", finish)
+            selector.focus_set()
 
         def change(remove=False):
             selected = tree.selection()
@@ -297,20 +353,31 @@ class PatreonUpdaterApp(tk.Tk):
                 messagebox.showinfo("Manage mappings", "Select a post first.", parent=dialog)
                 return
             post_id = selected[0]
+            number = link_number(post_id)
             updated = dict(mappings)
             if remove:
-                updated.pop(post_id, None)
+                value = updated.get(post_id)
+                if isinstance(value, dict):
+                    value.pop(str(number), None)
+                    if not value:
+                        updated.pop(post_id, None)
+                else:
+                    updated.pop(post_id, None)
             else:
                 name = picker.get()
                 matches = {folder.url for folder in self.audit_folders if folder.name == name}
                 if len(matches) != 1:
                     messagebox.showerror("Manage mappings", "Choose a folder with a unique name in your listing.", parent=dialog)
                     return
-                status = tree.item(post_id, "values")[2]
-                if "manual editing required" in status:
-                    messagebox.showinfo("Manage mappings", status, parent=dialog)
+                finding = next((item for item in build_report(self.audit_posts, self.audit_folders, mappings).posts_with_mega_links if item.post_id == post_id), None)
+                link = next((item for item in finding.links if item.link_number == number), None) if finding else None
+                if not link or not link.valid_folder_link:
+                    messagebox.showinfo("Manage mappings", link.status if link else "This link cannot be mapped.", parent=dialog)
                     return
-                updated[post_id] = name
+                existing = updated.get(post_id)
+                link_map = dict(existing) if isinstance(existing, dict) else ({"1": existing} if isinstance(existing, str) and len(finding.links) == 1 else {})
+                link_map[str(number)] = name
+                updated[post_id] = link_map
             try:
                 save_mappings(MAPPINGS_FILE, updated)
                 report = build_report(self.audit_posts, self.audit_folders, updated)
@@ -325,6 +392,7 @@ class PatreonUpdaterApp(tk.Tk):
             self.load_report()
 
         tree.bind("<<TreeviewSelect>>", choose)
+        tree.bind("<Double-1>", edit_link_cell)
         buttons = ttk.Frame(frame)
         buttons.pack(fill="x", pady=8)
         ttk.Button(buttons, text="Save mapping", command=change).pack(side="left")
@@ -359,17 +427,17 @@ class PatreonUpdaterApp(tk.Tk):
             return
         self.table.delete(*self.table.get_children())
         for index, item in enumerate(self.candidates):
-            self.table.insert("", "end", iid=str(index), values=(item.post_id, item.title, item.folder_name, item.old_url, item.new_url, item.edit_url))
+            folder_label = f"Link {item.link_number}: {item.folder_name}"
+            self.table.insert("", "end", iid=str(index), values=(item.post_id, item.title, folder_label, item.old_url, item.new_url, item.edit_url))
         self.status.set(f"Loaded {len(self.candidates)} reviewed replacement candidate(s).")
 
     def update_selected(self) -> None:
         selection = self.table.selection()
         if not selection:
-            messagebox.showinfo("Patreon Updater", "Select one replacement candidate first.")
+            messagebox.showinfo("Patreon Updater", "Select one replacement link first.")
             return
         item = self.candidates[int(selection[0])]
-        same_post = [candidate for candidate in self.candidates if candidate.post_id == item.post_id]
-        details = "\n".join(f"OLD: {candidate.old_url}\nNEW: {candidate.new_url}" for candidate in same_post)
+        details = f"Link {item.link_number}\nOLD: {item.old_url}\nNEW: {item.new_url}"
         approved = messagebox.askyesno(
             "Launch reviewed update?",
             f"A visible Playwright browser will open for post {item.post_id}: {item.title}.\n\n{details}\n\n"
@@ -380,8 +448,8 @@ class PatreonUpdaterApp(tk.Tk):
             return
         command = [
             *self._updater_command(), "--report", str(DEFAULT_REPORT),
-            "--post-id", item.post_id, "--apply", "--auto-confirm", "--save-wait-seconds", str(self.save_wait_seconds),
-            "--profile-dir", str(DATA_ROOT / ".playwright-patreon-profile"),
+            "--post-id", item.post_id, "--link-number", str(item.link_number), "--apply", "--auto-confirm", "--save-wait-seconds", str(self.save_wait_seconds),
+            "--profile-dir", str(DATA_ROOT / ".playwright-patreon-profile"), "--log-dir", str(DATA_ROOT / "logs"),
         ]
         creation_flags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
         DATA_ROOT.mkdir(parents=True, exist_ok=True)
@@ -392,7 +460,7 @@ class PatreonUpdaterApp(tk.Tk):
         if not self.candidates:
             messagebox.showinfo("Patreon Updater", "There are no replacement candidates to update.")
             return
-        details = "\n".join(f"{item.post_id} — {item.title}: {item.old_url} → {item.new_url}" for item in self.candidates)
+        details = "\n".join(f"{item.post_id} — {item.title} — Link {item.link_number}: {item.old_url} → {item.new_url}" for item in self.candidates)
         approved = messagebox.askyesno(
             "Update all posts?",
             f"This will open the guarded Playwright updater for all {len(self.candidates)} replacement candidate(s):\n\n{details}\n\n"
@@ -404,7 +472,7 @@ class PatreonUpdaterApp(tk.Tk):
         command = [
             *self._updater_command(), "--report", str(DEFAULT_REPORT),
             "--all", "--apply", "--confirm", "REPLACE-ALL", "--auto-confirm", "--save-wait-seconds", str(self.save_wait_seconds),
-            "--profile-dir", str(DATA_ROOT / ".playwright-patreon-profile"),
+            "--profile-dir", str(DATA_ROOT / ".playwright-patreon-profile"), "--log-dir", str(DATA_ROOT / "logs"),
         ]
         creation_flags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
         DATA_ROOT.mkdir(parents=True, exist_ok=True)
@@ -447,3 +515,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
