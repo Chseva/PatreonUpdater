@@ -1,6 +1,6 @@
 # Patreon Updater
 
-Version: **v1.0.1**
+Version: **v1.0.2**
 
 Patreon Updater finds outdated MEGA folder links in published Patreon posts and, after review, replaces them with the current links from your local MEGA listing.
 
@@ -13,7 +13,7 @@ It uses the Patreon API to create the report. Playwright is used only when you c
 3. Extracts MEGA folder links from each post's content.
 4. Compares post links with the local listing.
 5. Writes a Markdown report and a JSON report.
-6. Identifies replacement candidates using a saved manual mapping or a matching post title when the post's MEGA URL differs from the listed folder's current URL.
+6. Identifies replacement candidates using saved per-link mappings for multi-link posts or title matching for single-link posts when the URL differs from the folder's current URL.
 7. Lets you review and update one post or all reviewed candidates with the desktop app.
 
 Enter your creator API token and the app automatically discovers your Patreon campaign before retrieving its posts. If multiple campaigns are returned, the desktop app asks you to choose one. There is no built-in campaign ID.
@@ -32,9 +32,9 @@ In the app:
 
 1. Choose your MEGA listing text file. The field is blank by default, so it works with any location or filename.
 2. Select **Generate report** and enter your Patreon API token.
-3. Review the replacement candidates table. Each row shows the Patreon post ID, title, old post link, current local link, and direct edit URL.
-4. If a post needs help matching its folder, open **Manage mappings** and follow the instructions below.
-5. Select a row and choose **Update selected post**, or choose **Update all posts** after reviewing every listed change.
+3. Review the replacement candidates table. Each row shows the Patreon post ID, title, link number, old post link, current local link, and direct edit URL.
+4. If a post needs help matching its folder, open **Manage mappings**. For a post with multiple links, double-click its Link number to choose which one to map.
+5. Select a row and choose **Update selected link**, or choose **Update all posts** after reviewing every listed change.
 
 The first update opens a visible Chromium browser. Sign in to Patreon there if needed. The app reuses that local browser profile on later runs. The app confirmation is the approval to submit the update; it does not require terminal input or typing `UPDATE`.
 
@@ -56,20 +56,22 @@ Generate a report during the current app session first. The mapping window lists
 
 | Column | Meaning |
 | --- | --- |
-| Patreon post | The post title and its ID. Click a row to select the post you want to connect. |
-| Saved folder | The folder you manually assigned. A blank cell means no manual mapping has been saved; automatic title matching may still apply. |
-| Status | How the post was matched, or why it cannot be updated automatically. |
+| Patreon post | The post title and its ID. Click a row to select it. |
+| Link | The selected MEGA link number and total distinct links. Double-click to select a link. Repeated appearances of the same URL count once. |
+| Saved folder | The folder manually assigned to the selected link. A blank cell means no mapping has been saved for it. |
+| Status | How the selected link was matched, or why it cannot be updated automatically. |
 
-**The dropdown below the table lists folder names from your selected local MEGA listing.** Choose the folder that belongs to the selected Patreon post. Selecting a dropdown item alone does not save the connection.
+**The dropdown below the table lists folder names from your selected local MEGA listing.** Choose the folder that belongs to the selected post and link. Selecting a dropdown item alone does not save the connection.
 
 For example, suppose a post is called **Summer release**, but its MEGA folder is called **Alina**:
 
 1. Click **Summer release** in the post table.
-2. Choose **Alina** from the dropdown below the table.
-3. Click **Save mapping**. Alina appears in the **Saved folder** column.
-4. Close the mapping window and review the refreshed replacement candidates in the main window.
+2. If the post contains multiple MEGA links, double-click its **Link** cell and choose the link number.
+3. Choose **Alina** from the dropdown below the table.
+4. Click **Save mapping**. Alina appears in the **Saved folder** column for that link.
+5. Repeat for other links in the post as needed, then review the refreshed replacement candidates in the main window.
 
-Saving a mapping refreshes both reports immediately using the posts and listing loaded when you generated the report. It does not edit the Patreon post. A replacement candidate appears only if the supported single link in the post differs from the chosen folder's current link. Generate a fresh report if the Patreon content or local listing has changed.
+Saving a mapping refreshes both reports immediately using the posts and listing loaded when you generated the report. It does not edit the Patreon post. Each link in a multi-link post needs its own folder mapping. A replacement candidate appears only if that link differs from the chosen folder's current link. Generate a fresh report if the Patreon content or local listing has changed.
 
 Select a post and click **Remove mapping** to restore automatic title matching.
 
@@ -80,14 +82,15 @@ Select a post and click **Remove mapping** to restore automatic title matching.
 | Manual mapping | A saved post-to-folder connection is being used. This does not necessarily mean the link needs replacing. |
 | Mapped folder missing from listing | The saved folder name is absent from the current listing. Check the listing or change the mapping. |
 | Ambiguous folder name — choose a unique folder | More than one folder matched. Choose a uniquely named folder; duplicate names with different URLs must be clarified in the listing. |
-| Multiple links — manual editing required | The post contains multiple distinct MEGA links and is excluded from automatic updates. |
+| Multiple links — manual editing required | This post has multiple distinct links. Choose each link number and save its folder mapping before updating. |
+| Choose a folder for this link | This link in a multi-link post has not been mapped yet. Select its folder and save the mapping. |
 | Invalid link — manual editing required | The detected MEGA URL is not a supported folder link and is excluded from automatic updates. |
 
-Mappings are saved in `manual_mappings.json` in the app's data directory and reused for future reports, including command-line reports. They use the post ID and exact folder name, so post title changes and renewed folder URLs are supported. If you rename a folder, update its mapping. Missing or ambiguous folder names do not generate replacements.
+Mappings are saved in `manual_mappings.json` in the app's data directory and reused for future reports, including command-line reports. They use the post ID, link number, and exact folder name, so post title changes and renewed folder URLs are supported. If you rename a folder or reorder links, review its mappings again. Missing or ambiguous folder names do not generate replacements.
 
-Posts with multiple distinct MEGA links are marked **Multiple links — manual editing required** and excluded from automatic updates. Repeated occurrences of the same URL count as one distinct link. Invalid MEGA links are also excluded from updates. Manual mappings override title matching for supported single-link posts.
+Posts with multiple distinct MEGA links can be updated one link at a time after each link is manually mapped. Link numbers follow the order of distinct MEGA URLs found in the API post content; repeated occurrences of the same URL count as one. Invalid MEGA folder links cannot be mapped or updated. Single-link posts can still use automatic title matching or a saved manual mapping.
 
-The mapping file contains post IDs and folder names and is excluded from Git by default. Keep it private alongside your reports.
+The mapping file contains post IDs, link numbers, and folder names and is excluded from Git by default. Keep it private alongside your reports.
 
 ### Report fields
 
@@ -100,7 +103,7 @@ Report terms:
 
 - **Referenced folders** — a MEGA URL in the post exactly matches the current local listing.
 - **Missing or stale candidates** — a valid MEGA folder link appears in the post but is not an exact URL match in the listing.
-- **Replacement candidates** — a manual mapping or the post title identifies one folder in the listing, and the post's single supported MEGA link differs from that folder's current link. The JSON records both `old_post_url` and `new_listing_url`; these are the precise values used during an update.
+- **Replacement candidates** — a manual mapping or (for a single-link post) title matching identifies a folder whose current URL differs from that link. Each candidate records `link_number`, `old_post_url`, and `new_listing_url`; these are the values used during an update.
 - **Structurally invalid links** — MEGA URLs that do not use the expected `/folder/<id>#<key>` format.
 - **Unreferenced local folders** — folders in the listing that are not found in a published post.
 
@@ -159,6 +162,8 @@ python -m patreon_mega_audit.update_posts `
 
 The command-line updater uses a persistent browser profile at `.playwright-patreon-profile` by default. Editor controls default to automatic English/Chinese label detection. In the desktop app, **Settings → Patreon editor language** offers Automatic, English, and Chinese. The command-line equivalent is `--editor-language auto`, `en`, or `zh`. Exact-label command-line overrides remain available for other labels. Unrecognized or ambiguous controls stop the update; the old URL is still checked before replacement. English and Chinese label variants need verification against your live Patreon editor.
 
+Each Playwright update run writes a separate diagnostic log under `logs/`. In the packaged app, logs are in `%LOCALAPPDATA%\Patreon Updater\logs\`; when running from source, they are in the project folder's `logs/` directory. Logs record the post ID, selected link number, editor control lookups, and failure details. They intentionally do not record post content, API tokens, or MEGA URLs. Include the relevant log if reporting an update problem, but review it before sharing.
+
 The build scripts use `Patreon Updater.spec`, which excludes Playwright's `.local-browsers/.links/` installation metadata while keeping the bundled browser files.
 
 ## Token and privacy
@@ -182,3 +187,4 @@ This creates `dist\Patreon Updater\`. Zip and share the entire folder, including
 ```powershell
 python -m pytest
 ```
+
