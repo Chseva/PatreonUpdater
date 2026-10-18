@@ -19,7 +19,17 @@ class PostFinding:
     missing_or_stale_candidates: list[str]
     structurally_invalid_links: list[str]
     replacement_candidates: list["ReplacementCandidate"]
+    links: list["PostLink"]
     update_status: str = ""
+
+
+@dataclass(frozen=True)
+class PostLink:
+    link_number: int
+    url: str
+    valid_folder_link: bool
+    mapped_folder: str | None
+    status: str
 
 
 @dataclass(frozen=True)
@@ -29,6 +39,7 @@ class ReplacementCandidate:
     folder_name: str
     old_post_url: str
     new_listing_url: str
+    link_number: int = 1
 
 
 @dataclass(frozen=True)
@@ -40,41 +51,72 @@ class AuditReport:
         return asdict(self)
 
 
-def build_report(posts: list[PatreonPost], local_folders: list[MegaFolder], mappings: dict[str, str] | None = None) -> AuditReport:
+def indexed_mega_links(content: str | None) -> list[tuple[str, str | None]]:
+    """Return distinct MEGA URLs in content order with canonical folder URLs."""
+    indexed: list[tuple[str, str | None]] = []
+    seen_links: set[str] = set()
+    for raw in extract_mega_urls(content):
+        normalized = normalize_folder_url(raw)
+        identity = normalized or raw
+        if identity not in seen_links:
+            seen_links.add(identity)
+            indexed.append((identity, normalized))
+    return indexed
+
+
+def build_report(posts: list[PatreonPost], local_folders: list[MegaFolder], mappings: dict[str, str | dict[str, str]] | None = None) -> AuditReport:
     mappings = mappings or {}
     local_by_url = {folder.url: folder for folder in local_folders}
     referenced_urls: set[str] = set()
     findings: list[PostFinding] = []
     for post in posts:
-        extracted = extract_mega_urls(post.content)
-        valid = [normalized for raw in extracted if (normalized := normalize_folder_url(raw))]
-        invalid = [raw for raw in extracted if normalize_folder_url(raw) is None]
+        indexed = indexed_mega_links(post.content)
+        extracted = [raw for raw, _ in indexed]
+        valid = [normalized for _, normalized in indexed if normalized]
+        invalid = [url for url, normalized in indexed if normalized is None]
         matched = list(dict.fromkeys(url for url in valid if url in local_by_url))
         stale = list(dict.fromkeys(url for url in valid if url not in local_by_url))
         replacements: list[ReplacementCandidate] = []
-        distinct = set(valid + invalid)
         status = ""
-        if len(distinct) > 1:
-            status = "Multiple links — manual editing required"
-        elif invalid:
-            status = "Invalid link — manual editing required"
-        elif valid:
-            manual = post.id in mappings
-            matching_folders = list(dict.fromkeys(
-                folder for folder in local_folders
-                if (folder.name == mappings[post.id] if manual else title_matches_folder(post.title, folder.name))
-            ))
-            if len(matching_folders) == 1:
-                folder = matching_folders[0]
-                status = "Manual mapping" if manual else "Title match"
-                if folder.url != valid[0]:
-                    replacements.append(ReplacementCandidate(folder.name, valid[0], folder.url))
-            elif matching_folders:
-                status = "Ambiguous folder name — choose a unique folder"
-            elif manual:
-                status = "Mapped folder missing from listing"
+        stored = mappings.get(post.id)
+        per_link = stored if isinstance(stored, dict) else {}
+        legacy_folder = stored if isinstance(stored, str) and len(indexed) == 1 else None
+        link_findings: list[PostLink] = []
+        statuses: list[str] = []
+        for link_number, (url, normalized) in enumerate(indexed, 1):
+            if normalized is None:
+                link_status = "Invalid link — manual editing required"
+                mapped_name = None
             else:
-                status = "No folder match"
+                selected_name = per_link.get(str(link_number)) or legacy_folder
+                manual = bool(selected_name)
+                matching_folders = list(dict.fromkeys(
+                    folder for folder in local_folders
+                    if (folder.name == selected_name if manual else (len(indexed) == 1 and title_matches_folder(post.title, folder.name)))
+                ))
+                if len(matching_folders) == 1:
+                    folder = matching_folders[0]
+                    mapped_name = folder.name
+                    link_status = "Manual mapping" if manual else "Title match"
+                    if folder.url != normalized:
+                        replacements.append(ReplacementCandidate(folder.name, normalized, folder.url, link_number))
+                    else:
+                        link_status = "Link already current"
+                elif matching_folders:
+                    mapped_name = selected_name
+                    link_status = "Ambiguous folder name — choose a unique folder"
+                elif manual:
+                    mapped_name = selected_name
+                    link_status = "Mapped folder missing from listing"
+                else:
+                    mapped_name = None
+                    link_status = "Choose a folder for this link" if len(indexed) > 1 else "No folder match"
+            link_findings.append(PostLink(link_number, url, normalized is not None, mapped_name, link_status))
+            statuses.append(f"Link {link_number}: {link_status}")
+        if len(indexed) > 1:
+            status = "; ".join(statuses) if any(str(index) in per_link for index in range(1, len(indexed) + 1)) else "Multiple links — manual editing required"
+        elif statuses:
+            status = statuses[0].split(": ", 1)[-1]
         if extracted:
             referenced_urls.update(matched)
             # API-provided post URLs can be relative and may depend on a campaign
@@ -82,7 +124,7 @@ def build_report(posts: list[PatreonPost], local_folders: list[MegaFolder], mapp
             # browser navigation in the later editing workflow.
             post_url = f"https://www.patreon.com/posts/{post.id}"
             edit_url = f"{post_url}/edit"
-            findings.append(PostFinding(post.id, post.title, post_url, edit_url, post.published_at, matched, stale, invalid, replacements, status))
+            findings.append(PostFinding(post.id, post.title, post_url, edit_url, post.published_at, matched, stale, invalid, replacements, link_findings, status))
     unreferenced = [folder for folder in local_folders if folder.url not in referenced_urls]
     return AuditReport(findings, unreferenced)
 
@@ -107,7 +149,7 @@ def render_markdown(report: AuditReport) -> str:
         if finding.replacement_candidates:
             lines.append("Replacement candidates (old post link → new listing link):")
             lines.extend(
-                f"- {item.folder_name}: {item.old_post_url} → {item.new_listing_url}"
+                f"- Link {item.link_number} — {item.folder_name}: {item.old_post_url} → {item.new_listing_url}"
                 for item in finding.replacement_candidates
             )
         if not (finding.referenced_folders or finding.missing_or_stale_candidates or finding.structurally_invalid_links):
@@ -120,3 +162,4 @@ def render_markdown(report: AuditReport) -> str:
         lines.append("- None")
     lines.append("")
     return "\n".join(lines)
+
